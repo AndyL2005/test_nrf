@@ -49,9 +49,9 @@
             try {
                 logDiv.innerHTML = "Requesting Bluetooth Device...<br>";
                 
-                // This forces the browser to only show the nRF52 board in the pop-up list
+                // Temporarily allow all devices so we can see the cached name
                 const device = await navigator.bluetooth.requestDevice({
-                    filters: [{ name: 'nRF52_Sensor' }],
+                    acceptAllDevices: true,
                     optionalServices: [targetServiceUuid]
                 });
 
