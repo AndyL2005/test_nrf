@@ -2,7 +2,7 @@
 <html>
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Universal BLE Logger</title>
+    <title>nRF52 BLE Logger</title>
     <style>
         body { font-family: -apple-system, sans-serif; padding: 20px; text-align: center; }
         .input-group { margin-bottom: 15px; text-align: left; max-width: 400px; margin-left: auto; margin-right: auto; }
@@ -10,7 +10,8 @@
         .input-group input { width: 100%; padding: 8px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
         button { padding: 15px 30px; margin: 10px; font-size: 16px; border-radius: 8px; border: none; cursor: pointer; }
         #connectBtn { background-color: #007bff; color: white; }
-        #saveBtn { background-color: #28a745; color: white; display: none; }
+        /* The button is now permanently visible because display: none; was removed */
+        #saveBtn { background-color: #28a745; color: white; } 
         #log { margin-top: 20px; text-align: left; height: 300px; overflow-y: scroll; background: #f4f4f4; padding: 10px; border: 1px solid #ddd; }
     </style>
 </head>
@@ -48,12 +49,13 @@
             try {
                 logDiv.innerHTML = "Requesting Bluetooth Device...<br>";
                 
+                // This forces the browser to only show the nRF52 board in the pop-up list
                 const device = await navigator.bluetooth.requestDevice({
-                    acceptAllDevices: true,
+                    filters: [{ name: 'nRF52_Sensor' }],
                     optionalServices: [targetServiceUuid]
                 });
 
-                logDiv.innerHTML += `Connecting to GATT Server on ${device.name || 'Unknown Device'}...<br>`;
+                logDiv.innerHTML += `Connecting to GATT Server on ${device.name}...<br>`;
                 const server = await device.gatt.connect();
 
                 logDiv.innerHTML += "Getting Service...<br>";
@@ -66,7 +68,6 @@
                 characteristic.addEventListener('characteristicvaluechanged', handleData);
                 
                 logDiv.innerHTML += "<span style='color:green'><b>Listening for data...</b></span><br>";
-                document.getElementById('saveBtn').style.display = "inline-block";
 
             } catch (error) {
                 logDiv.innerHTML += "<span style='color:red'>Error: " + error.message + "</span><br>";
@@ -96,7 +97,7 @@
                 csvContent += row + "\r\n";
             });
 
-            // 2. Try using the native iOS Share Sheet first
+            // 2. Try using the native iOS Share Sheet first (for Bluefy)
             if (navigator.share) {
                 try {
                     const file = new File([csvContent], "ble_sensor_data.csv", { type: "text/csv" });
