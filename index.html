@@ -51,8 +51,8 @@
                 
                 // Temporarily allow all devices so we can see the cached name
                 const device = await navigator.bluetooth.requestDevice({
-                    acceptAllDevices: true
-                    //optionalServices: [targetServiceUuid]
+                    acceptAllDevices: true,
+                    optionalServices: [targetServiceUuid]
                 });
 
                 logDiv.innerHTML += `Connecting to GATT Server on ${device.name}...<br>`;
