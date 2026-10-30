@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>nRF52 BLE Logger</title>
+    <style>
+        body { font-family: -apple-system, sans-serif; padding: 20px; text-align: center; }
+        button { padding: 15px 30px; margin: 10px; font-size: 16px; border-radius: 8px; border: none; cursor: pointer; }
+        #connectBtn { background-color: #007bff; color: white; }
+        #saveBtn { background-color: #28a745; color: white; display: none; }
+        #log { margin-top: 20px; text-align: left; height: 300px; overflow-y: scroll; background: #f4f4f4; padding: 10px; }
+    </style>
+</head>
+<body>
+
+    <h2>Sensor Data Logger</h2>
+    <button id="connectBtn">Connect to nRF52</button>
+    <button id="saveBtn">Save to CSV</button>
+    
+    <div id="log">Waiting for connection...</div>
+
+    <script>
+        const serviceUuid = "19b10000-e8f2-537e-4f6c-d104768a1214";
+        const characteristicUuid = "19b10001-e8f2-537e-4f6c-d104768a1214";
+        
+        let sensorData = [["Index", "Glucose"]]; // CSV Headers
+        let logDiv = document.getElementById('log');
+
+        document.getElementById('connectBtn').addEventListener('click', async () => {
+            try {
+                logDiv.innerHTML = "Requesting Bluetooth Device...<br>";
+                const device = await navigator.bluetooth.requestDevice({
+                    filters: [{ name: 'nRF52_Sensor' }],
+                    optionalServices: [serviceUuid]
+                });
+
+                logDiv.innerHTML += "Connecting to GATT Server...<br>";
+                const server = await device.gatt.connect();
+
+                logDiv.innerHTML += "Getting Service...<br>";
+                const service = await server.getPrimaryService(serviceUuid);
+
+                logDiv.innerHTML += "Getting Characteristic...<br>";
+                const characteristic = await service.getCharacteristic(characteristicUuid);
+
+                await characteristic.startNotifications();
+                characteristic.addEventListener('characteristicvaluechanged', handleData);
+                
+                logDiv.innerHTML += "<b>Listening for data...</b><br>";
+                document.getElementById('saveBtn').style.display = "inline-block";
+
+            } catch (error) {
+                logDiv.innerHTML += "<span style='color:red'>Error: " + error + "</span><br>";
+            }
+        });
+
+        function handleData(event) {
+            const decoder = new TextDecoder('utf-8');
+            const valueStr = decoder.decode(event.target.value);
+            
+            logDiv.innerHTML += `Received: ${valueStr}<br>`;
+            logDiv.scrollTop = logDiv.scrollHeight;
+
+            // Split the comma-separated string back into array elements
+            const parts = valueStr.split(',');
+            if(parts.length === 2) {
+                sensorData.push([parts[0], parts[1]]);
+            }
+        }
+
+        document.getElementById('saveBtn').addEventListener('click', () => {
+            let csvContent = "data:text/csv;charset=utf-8,";
+            sensorData.forEach(rowArray => {
+                let row = rowArray.join(",");
+                csvContent += row + "\r\n";
+            });
+
+            const encodedUri = encodeURI(csvContent);
+            const link = document.createElement("a");
+            link.setAttribute("href", encodedUri);
+            link.setAttribute("download", "sensor_data.csv");
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        });
+    </script>
+</body>
+</html>
