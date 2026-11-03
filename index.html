@@ -1,15 +1,52 @@
+
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+    <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>nRF52 BLE Logger</title>
     <style>
-        body { font-family: -apple-system, sans-serif; padding: 20px; text-align: center; }
-        button { padding: 15px 30px; margin: 10px; font-size: 16px; border-radius: 8px; border: none; cursor: pointer; }
+        body {
+            font-family: -apple-system, sans-serif;
+            padding: 20px;
+            text-align: center;
+        }
+
+        button {
+            padding: 15px 25px;
+            margin: 6px;
+            font-size: 16px;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+        }
+
+        button:disabled {
+            opacity: 0.45;
+            cursor: default;
+        }
+
         #connectBtn { background-color: #007bff; color: white; }
-        #saveBtn { background-color: #28a745; color: white; } 
-        #retryBtn { background-color: #ffc107; color: black; display: none; }
-        #log { margin-top: 20px; text-align: left; height: 300px; overflow-y: scroll; background: #f4f4f4; padding: 10px; border: 1px solid #ddd; }
+        #disconnectBtn { background-color: #dc3545; color: white; }
+        #stopBtn { background-color: #fd7e14; color: white; }
+        #resumeBtn { background-color: #17a2b8; color: white; }
+        #retryBtn {
+            background-color: #ffc107;
+            color: black;
+            display: none;
+        }
+        #saveBtn { background-color: #28a745; color: white; }
+
+        #log {
+            margin-top: 20px;
+            text-align: left;
+            height: 300px;
+            overflow-y: scroll;
+            background: #f4f4f4;
+            padding: 10px;
+            border: 1px solid #ddd;
+            overflow-wrap: anywhere;
+        }
     </style>
 </head>
 <body>
@@ -17,9 +54,12 @@
     <h2>Glucose/Cortisol Sensor Logger</h2>
 
     <button id="connectBtn">Connect to Device</button>
+    <button id="disconnectBtn" disabled>Disconnect</button>
+    <button id="stopBtn" disabled>Stop Data Transfer</button>
+    <button id="resumeBtn" disabled>Resume Data Transfer</button>
     <button id="retryBtn">Retry Handshake</button>
     <button id="saveBtn">Save to CSV</button>
-    
+
     <div id="log">Waiting for connection...</div>
 
     <script>
@@ -27,110 +67,291 @@
         const TX_CHAR_UUID = "19b10001-e8f2-537e-4f6c-d104768a1214";
         const RX_CHAR_UUID = "19b10002-e8f2-537e-4f6c-d104768a1214";
 
-        let sensorData = [["Index", "Cortisol"]]; 
-        let logDiv = document.getElementById('log');
+        const logDiv = document.getElementById('log');
+        const connectBtn = document.getElementById('connectBtn');
+        const disconnectBtn = document.getElementById('disconnectBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const resumeBtn = document.getElementById('resumeBtn');
+        const retryBtn = document.getElementById('retryBtn');
+
+        let sensorData = [["Index", "Cortisol"]];
+
+        let device = null;
+        let txCharacteristic = null;
+        let rxCharacteristic = null;
+
         let isHandshakeComplete = false;
-        
-        // Store characteristic globally so the retry button can use it
-        let globalRxCharacteristic = null;
+        let waitingForHandshake = false;
+        let stopPending = false;
 
-        document.getElementById('connectBtn').addEventListener('click', async () => {
+        function log(message) {
+            const line = document.createElement('div');
+            line.textContent = message;
+            logDiv.appendChild(line);
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        function updateButtons() {
+            const connected = !!device?.gatt?.connected;
+
+            connectBtn.disabled = connected;
+            disconnectBtn.disabled = !connected;
+
+            stopBtn.disabled =
+                !connected || !isHandshakeComplete || stopPending;
+
+            resumeBtn.disabled =
+                !connected || isHandshakeComplete ||
+                waitingForHandshake || stopPending;
+
+            retryBtn.style.display =
+                connected && !waitingForHandshake &&
+                !isHandshakeComplete && !stopPending
+                    ? 'inline-block'
+                    : 'none';
+        }
+
+        function handleDisconnected() {
+            isHandshakeComplete = false;
+            waitingForHandshake = false;
+            stopPending = false;
+
+            txCharacteristic = null;
+            rxCharacteristic = null;
+
+            if (device) {
+                device.removeEventListener(
+                    'gattserverdisconnected',
+                    handleDisconnected
+                );
+                device = null;
+            }
+
+            log('Bluetooth disconnected. Collected data remains available for CSV export.');
+            updateButtons();
+        }
+
+        // CONNECT
+        connectBtn.addEventListener('click', async () => {
             try {
-                logDiv.innerHTML = "Requesting Bluetooth Device...<br>";
-                
-                const device = await navigator.bluetooth.requestDevice({
-                    acceptAllDevices: true,
-                    optionalServices: [SERVICE_UUID]
-                });
+                connectBtn.disabled = true;
+                log('Requesting Bluetooth device...');
 
-                logDiv.innerHTML += `Connecting to GATT Server on ${device.name}...<br>`;
+                const selectedDevice =
+                    await navigator.bluetooth.requestDevice({
+                        acceptAllDevices: true,
+                        optionalServices: [SERVICE_UUID]
+                    });
+
+                device = selectedDevice;
+
+                device.addEventListener(
+                    'gattserverdisconnected',
+                    handleDisconnected
+                );
+
+                log(`Connecting to ${device.name || 'selected device'}...`);
+
                 const server = await device.gatt.connect();
+                const service =
+                    await server.getPrimaryService(SERVICE_UUID);
 
-                logDiv.innerHTML += "Getting Service...<br>";
-                const service = await server.getPrimaryService(SERVICE_UUID);
+                txCharacteristic =
+                    await service.getCharacteristic(TX_CHAR_UUID);
 
-                const txCharacteristic = await service.getCharacteristic(TX_CHAR_UUID);
-                globalRxCharacteristic = await service.getCharacteristic(RX_CHAR_UUID);
+                rxCharacteristic =
+                    await service.getCharacteristic(RX_CHAR_UUID);
+
+                txCharacteristic.addEventListener(
+                    'characteristicvaluechanged',
+                    handleData
+                );
 
                 await txCharacteristic.startNotifications();
-                txCharacteristic.addEventListener('characteristicvaluechanged', handleData);
-                
-                sendHandshakeRequest();
+
+                updateButtons();
+                await sendHandshakeRequest();
 
             } catch (error) {
-                logDiv.innerHTML += "<span style='color:red'>Error: " + error.message + "</span><br>";
+                log('Connection error: ' + error.message);
+
+                if (device?.gatt?.connected) {
+                    device.gatt.disconnect();
+                } else {
+                    handleDisconnected();
+                }
+            } finally {
+                updateButtons();
             }
         });
 
-        // Function to send the REQ byte buffer
-        async function sendHandshakeRequest() {
-            if (!globalRxCharacteristic) return;
-            isHandshakeComplete = false;
-            document.getElementById('retryBtn').style.display = "none";
-            logDiv.innerHTML += "<br><span style='color:orange'>Sending handshake request... Waiting for Arduino YES/NO.</span><br>";
-            const encoder = new TextEncoder();
-            await globalRxCharacteristic.writeValue(encoder.encode("REQ"));
-        }
-
-        // Attach retry logic to the new button
-        document.getElementById('retryBtn').addEventListener('click', sendHandshakeRequest);
-
-        function handleData(event) {
-            const decoder = new TextDecoder('utf-8');
-            const valueStr = decoder.decode(event.target.value);
-            
-            // Catch handshake confirmations or denials
-            if (!isHandshakeComplete) {
-                if (valueStr === "CONFIRM") {
-                    isHandshakeComplete = true;
-                    logDiv.innerHTML += "<span style='color:green'><b>Handshake Authorized! Receiving Data...</b></span><br>";
-                } else if (valueStr === "DENIED") {
-                    logDiv.innerHTML += "<span style='color:red'><b>Failed to authenticate. User denied data transfer. Try again.</b></span><br>";
-                    document.getElementById('retryBtn').style.display = "inline-block";
-                }
-                return; 
+        // SEND BLE COMMAND
+        async function sendCommand(command) {
+            if (!device?.gatt?.connected || !rxCharacteristic) {
+                throw new Error('No Bluetooth device connected');
             }
 
-            // Only logs if handshake is authorized
-            logDiv.innerHTML += `Received: ${valueStr}<br>`;
-            logDiv.scrollTop = logDiv.scrollHeight;
+            await rxCharacteristic.writeValue(
+                new TextEncoder().encode(command)
+            );
+        }
+
+        // REQUEST OR RESUME TRANSMISSION
+        async function sendHandshakeRequest() {
+            if (!device?.gatt?.connected || waitingForHandshake) {
+                return;
+            }
+
+            isHandshakeComplete = false;
+            waitingForHandshake = true;
+            updateButtons();
+
+            log('Sending REQ. Waiting for D0 (YES) or D1 (NO) authorization...');
+
+            try {
+                await sendCommand('REQ');
+            } catch (error) {
+                waitingForHandshake = false;
+                log('Handshake request failed: ' + error.message);
+                updateButtons();
+            }
+        }
+
+        retryBtn.addEventListener(
+            'click',
+            sendHandshakeRequest
+        );
+
+        resumeBtn.addEventListener(
+            'click',
+            sendHandshakeRequest
+        );
+
+        // STOP DATA TRANSFER WITHOUT DISCONNECTING
+        stopBtn.addEventListener('click', async () => {
+            if (!device?.gatt?.connected || stopPending) {
+                return;
+            }
+
+            stopPending = true;
+            updateButtons();
+
+            try {
+                await sendCommand('STOP');
+
+                log('STOP command sent. Waiting for device acknowledgment...');
+            } catch (error) {
+                stopPending = false;
+                log('Failed to stop transfer: ' + error.message);
+                updateButtons();
+            }
+        });
+
+        // DISCONNECT BLUETOOTH
+        disconnectBtn.addEventListener('click', () => {
+            if (device?.gatt?.connected) {
+                device.gatt.disconnect();
+            }
+        });
+
+        // HANDLE INCOMING BLE NOTIFICATIONS
+        function handleData(event) {
+            const valueStr = new TextDecoder('utf-8')
+                .decode(event.target.value)
+                .trim();
+
+            if (valueStr === 'STOPPED') {
+                stopPending = false;
+                waitingForHandshake = false;
+                isHandshakeComplete = false;
+
+                log('Arduino confirmed: data transfer stopped. BLE remains connected.');
+                updateButtons();
+                return;
+            }
+
+            if (valueStr === 'CONFIRM') {
+                waitingForHandshake = false;
+                isHandshakeComplete = true;
+
+                log('Handshake authorized. Receiving data...');
+                updateButtons();
+                return;
+            }
+
+            if (valueStr === 'DENIED') {
+                waitingForHandshake = false;
+                isHandshakeComplete = false;
+
+                log('Authorization denied. Retry the handshake to request again.');
+                updateButtons();
+                return;
+            }
+
+            if (!isHandshakeComplete) {
+                return;
+            }
+
+            log('Received: ' + valueStr);
 
             const parts = valueStr.split(',');
-            if(parts.length >= 2) {
+
+            if (parts.length >= 2) {
                 sensorData.push([parts[0], parts[1]]);
             } else {
-                sensorData.push([sensorData.length, valueStr]); 
+                sensorData.push([sensorData.length, valueStr]);
             }
         }
 
-        document.getElementById('saveBtn').addEventListener('click', async () => {
-            let csvContent = "";
-            sensorData.forEach(rowArray => {
-                let row = rowArray.join(",");
-                csvContent += row + "\r\n";
+        // SAVE TO CSV
+        document.getElementById('saveBtn')
+            .addEventListener('click', async () => {
+
+                const csvContent =
+                    sensorData.map(row => row.join(','))
+                        .join('\r\n') + '\r\n';
+
+                if (navigator.share) {
+                    try {
+                        const file = new File(
+                            [csvContent],
+                            'ble_cortisol_data.csv',
+                            { type: 'text/csv' }
+                        );
+
+                        if (navigator.canShare?.({ files: [file] })) {
+                            await navigator.share({
+                                title: 'Export Cortisol Data',
+                                files: [file]
+                            });
+                            return;
+                        }
+
+                    } catch (err) {
+                        log('Share canceled or unavailable; trying file download.');
+                    }
+                }
+
+                const blob = new Blob(
+                    [csvContent],
+                    { type: 'text/csv;charset=utf-8;' }
+                );
+
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+
+                link.href = url;
+                link.download = 'ble_cortisol_data.csv';
+
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
             });
 
-            if (navigator.share) {
-                try {
-                    const file = new File([csvContent], "ble_cortisol_data.csv", { type: "text/csv" });
-                    await navigator.share({
-                        title: 'Export Cortisol Data',
-                        files: [file]
-                    });
-                    return; 
-                } catch (err) {
-                    console.log("Share sheet canceled or failed.");
-                }
-            }
-
-            const encodedUri = "data:text/csv;charset=utf-8," + encodeURIComponent(csvContent);
-            const link = document.createElement("a");
-            link.setAttribute("href", encodedUri);
-            link.setAttribute("download", "ble_cortisol_data.csv");
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-        });
+        updateButtons();
     </script>
+
 </body>
 </html>
