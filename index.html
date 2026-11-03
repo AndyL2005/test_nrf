@@ -5,79 +5,93 @@
     <title>nRF52 BLE Logger</title>
     <style>
         body { font-family: -apple-system, sans-serif; padding: 20px; text-align: center; }
-        .input-group { margin-bottom: 15px; text-align: left; max-width: 400px; margin-left: auto; margin-right: auto; }
-        .input-group label { font-size: 14px; font-weight: bold; display: block; margin-bottom: 5px; }
-        .input-group input { width: 100%; padding: 8px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
         button { padding: 15px 30px; margin: 10px; font-size: 16px; border-radius: 8px; border: none; cursor: pointer; }
         #connectBtn { background-color: #007bff; color: white; }
-        /* The button is now permanently visible because display: none; was removed */
         #saveBtn { background-color: #28a745; color: white; } 
+        #retryBtn { background-color: #ffc107; color: black; display: none; }
         #log { margin-top: 20px; text-align: left; height: 300px; overflow-y: scroll; background: #f4f4f4; padding: 10px; border: 1px solid #ddd; }
     </style>
 </head>
 <body>
 
-    <h2>BLE Sensor Logger</h2>
-    
-    <div class="input-group">
-        <label for="serviceUuid">Service UUID:</label>
-        <input type="text" id="serviceUuid" value="19b10000-e8f2-537e-4f6c-d104768a1214">
-    </div>
-    <div class="input-group">
-        <label for="charUuid">Characteristic UUID:</label>
-        <input type="text" id="charUuid" value="19b10001-e8f2-537e-4f6c-d104768a1214">
-    </div>
+    <h2>Glucose/Cortisol Sensor Logger</h2>
 
     <button id="connectBtn">Connect to Device</button>
+    <button id="retryBtn">Retry Handshake</button>
     <button id="saveBtn">Save to CSV</button>
     
-    <div id="log">Waiting for configuration...</div>
+    <div id="log">Waiting for connection...</div>
 
     <script>
-        let sensorData = [["Index", "Data"]]; // CSV Headers
+        const SERVICE_UUID = "19b10000-e8f2-537e-4f6c-d104768a1214";
+        const TX_CHAR_UUID = "19b10001-e8f2-537e-4f6c-d104768a1214";
+        const RX_CHAR_UUID = "19b10002-e8f2-537e-4f6c-d104768a1214";
+
+        let sensorData = [["Index", "Cortisol"]]; 
         let logDiv = document.getElementById('log');
+        let isHandshakeComplete = false;
+        
+        // Store characteristic globally so the retry button can use it
+        let globalRxCharacteristic = null;
 
         document.getElementById('connectBtn').addEventListener('click', async () => {
-            const targetServiceUuid = document.getElementById('serviceUuid').value.trim().toLowerCase();
-            const targetCharUuid = document.getElementById('charUuid').value.trim().toLowerCase();
-
-            if (!targetServiceUuid || !targetCharUuid) {
-                logDiv.innerHTML = "<span style='color:red'>Error: Please enter both UUIDs.</span><br>";
-                return;
-            }
-
             try {
                 logDiv.innerHTML = "Requesting Bluetooth Device...<br>";
                 
-                // Temporarily allow all devices so we can see the cached name
                 const device = await navigator.bluetooth.requestDevice({
-                    acceptAllDevices: true,
-                    optionalServices: [targetServiceUuid]
+                    filters: [{ name: 'nRF52_Sensor' }],
+                    optionalServices: [SERVICE_UUID]
                 });
 
                 logDiv.innerHTML += `Connecting to GATT Server on ${device.name}...<br>`;
                 const server = await device.gatt.connect();
 
                 logDiv.innerHTML += "Getting Service...<br>";
-                const service = await server.getPrimaryService(targetServiceUuid);
+                const service = await server.getPrimaryService(SERVICE_UUID);
 
-                logDiv.innerHTML += "Getting Characteristic...<br>";
-                const characteristic = await service.getCharacteristic(targetCharUuid);
+                const txCharacteristic = await service.getCharacteristic(TX_CHAR_UUID);
+                globalRxCharacteristic = await service.getCharacteristic(RX_CHAR_UUID);
 
-                await characteristic.startNotifications();
-                characteristic.addEventListener('characteristicvaluechanged', handleData);
+                await txCharacteristic.startNotifications();
+                txCharacteristic.addEventListener('characteristicvaluechanged', handleData);
                 
-                logDiv.innerHTML += "<span style='color:green'><b>Listening for data...</b></span><br>";
+                sendHandshakeRequest();
 
             } catch (error) {
                 logDiv.innerHTML += "<span style='color:red'>Error: " + error.message + "</span><br>";
             }
         });
 
+        // Function to send the REQ byte buffer
+        async function sendHandshakeRequest() {
+            if (!globalRxCharacteristic) return;
+            isHandshakeComplete = false;
+            document.getElementById('retryBtn').style.display = "none";
+            logDiv.innerHTML += "<br><span style='color:orange'>Sending handshake request... Waiting for Arduino YES/NO.</span><br>";
+            const encoder = new TextEncoder();
+            await globalRxCharacteristic.writeValue(encoder.encode("REQ"));
+        }
+
+        // Attach retry logic to the new button
+        document.getElementById('retryBtn').addEventListener('click', sendHandshakeRequest);
+
         function handleData(event) {
             const decoder = new TextDecoder('utf-8');
             const valueStr = decoder.decode(event.target.value);
             
+            // Catch handshake confirmations or denials
+            if (!isHandshakeComplete) {
+                if (valueStr === "CONFIRM") {
+                    isHandshakeComplete = true;
+                    logDiv.innerHTML += "<span style='color:green'><b>Handshake Authorized! Receiving Data...</b></span><br>";
+                } else if (valueStr === "DENIED") {
+                    logDiv.innerHTML += "<span style='color:red'><b>Failed to authenticate. User denied data transfer. Try again.</b></span><br>";
+                    document.getElementById('retryBtn').style.display = "inline-block";
+                }
+                return; 
+            }
+
+            // Only logs if handshake is authorized
             logDiv.innerHTML += `Received: ${valueStr}<br>`;
             logDiv.scrollTop = logDiv.scrollHeight;
 
@@ -90,32 +104,29 @@
         }
 
         document.getElementById('saveBtn').addEventListener('click', async () => {
-            // 1. Format the CSV string
             let csvContent = "";
             sensorData.forEach(rowArray => {
                 let row = rowArray.join(",");
                 csvContent += row + "\r\n";
             });
 
-            // 2. Try using the native iOS Share Sheet first (for Bluefy)
             if (navigator.share) {
                 try {
-                    const file = new File([csvContent], "ble_sensor_data.csv", { type: "text/csv" });
+                    const file = new File([csvContent], "ble_cortisol_data.csv", { type: "text/csv" });
                     await navigator.share({
-                        title: 'Export Sensor Data',
+                        title: 'Export Cortisol Data',
                         files: [file]
                     });
-                    return; // Stop here if the share sheet successfully opens
+                    return; 
                 } catch (err) {
                     console.log("Share sheet canceled or failed.");
                 }
             }
 
-            // 3. Fallback for Windows/Mac computers (if the Share Sheet isn't supported)
             const encodedUri = "data:text/csv;charset=utf-8," + encodeURIComponent(csvContent);
             const link = document.createElement("a");
             link.setAttribute("href", encodedUri);
-            link.setAttribute("download", "ble_sensor_data.csv");
+            link.setAttribute("download", "ble_cortisol_data.csv");
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
