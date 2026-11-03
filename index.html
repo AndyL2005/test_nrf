@@ -39,7 +39,7 @@
                 logDiv.innerHTML = "Requesting Bluetooth Device...<br>";
                 
                 const device = await navigator.bluetooth.requestDevice({
-                    filters: [{ name: 'nRF52_Sensor' }],
+                    acceptAllDevices: true,
                     optionalServices: [SERVICE_UUID]
                 });
 
